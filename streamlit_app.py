@@ -6,7 +6,8 @@ import streamlit as st
 from db import (
     init_db, import_state, list_records, export_state, upsert_record, delete_record,
     MODULES, PAYROLL_MODULES, flatten, using_postgres, add_stock_movement,
-    stock_balance_by_product, normalize_legacy_inventory, list_backups, make_id
+    stock_balance_by_product, normalize_legacy_inventory, list_backups, make_id,
+    enrich_product_display, enrich_order_items, product_name_for, product_unit_for
 )
 
 st.set_page_config(page_title="SSI Operations", layout="wide")
@@ -31,9 +32,20 @@ def safe_df(rows):
         return pd.DataFrame()
     return pd.DataFrame(flatten(rows))
 
+def display_rows(module, rows):
+    cleaned = []
+    for r in rows:
+        if module in ["inventory", "stock_movements"]:
+            cleaned.append(enrich_product_display(r))
+        elif module in ["orders", "dispatches"]:
+            cleaned.append(enrich_order_items(r))
+        else:
+            cleaned.append(r)
+    return cleaned
+
 def show_table(module, title):
     st.subheader(title)
-    rows = list_records(module)
+    rows = display_rows(module, list_records(module))
     df = safe_df(rows)
     if df.empty:
         st.info("No data available yet.")
@@ -239,7 +251,7 @@ elif page == "Sales Orders":
 
 elif page == "Dispatch":
     st.subheader("Dispatch")
-    orders = [o for o in list_records("orders") if o.get("status") != "Closed"]
+    orders = [enrich_order_items(o) for o in list_records("orders") if o.get("status") != "Closed"]
     balances = stock_balance_by_product()
     if not orders:
         st.info("No pending order found.")
@@ -248,11 +260,11 @@ elif page == "Dispatch":
         selected_order = st.selectbox("Select Order", list(order_map.keys()))
         order = order_map[selected_order]
         st.write("Order Items")
-        st.dataframe(pd.DataFrame(order.get("items", [])), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame([enrich_product_display(x) for x in order.get("items", [])]), use_container_width=True, hide_index=True)
 
         dispatch_lines = []
         st.write("Enter dispatch quantity")
-        for idx, item in enumerate(order.get("items", [])):
+        for idx, item in enumerate([enrich_product_display(x) for x in order.get("items", [])]):
             pid = str(item.get("product_id"))
             available = float(balances.get(pid, {}).get("stock_qty", 0) or 0)
             ordered = float(item.get("qty", 0) or 0)
@@ -296,9 +308,9 @@ elif page == "Dispatch":
 elif page == "Reports":
     st.subheader("Reports")
     balances = pd.DataFrame(list(stock_balance_by_product().values()))
-    orders = pd.DataFrame(flatten(list_records("orders")))
-    dispatches = pd.DataFrame(flatten(list_records("dispatches")))
-    movements = pd.DataFrame(flatten(list_records("stock_movements")))
+    orders = pd.DataFrame(flatten(display_rows("orders", list_records("orders"))))
+    dispatches = pd.DataFrame(flatten(display_rows("dispatches", list_records("dispatches"))))
+    movements = pd.DataFrame(flatten(display_rows("stock_movements", list_records("stock_movements"))))
 
     tab1, tab2, tab3, tab4 = st.tabs(["Current Stock", "Orders", "Dispatches", "Stock Ledger"])
     with tab1:

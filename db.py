@@ -318,10 +318,57 @@ def flatten(rows):
         flat.append(simple)
     return flat
 
+
+def product_lookup():
+    """Return {product_id: product_record}. Used to display product names instead of IDs."""
+    lookup = {}
+    for p in list_records("products"):
+        pid = str(p.get("id") or p.get("productId") or p.get("sku") or "").strip()
+        if pid:
+            lookup[pid] = p
+    return lookup
+
+def product_name_for(product_id, fallback=""):
+    pid = str(product_id or "").strip()
+    if not pid:
+        return fallback or ""
+    p = product_lookup().get(pid, {})
+    return p.get("name") or p.get("product_name") or p.get("productName") or fallback or pid
+
+def product_unit_for(product_id, fallback=""):
+    pid = str(product_id or "").strip()
+    p = product_lookup().get(pid, {})
+    return p.get("unit") or p.get("uom") or fallback or ""
+
+def enrich_product_display(row):
+    """Keep original IDs but add readable product_name/unit for old imported rows."""
+    row = dict(row)
+    pid = str(row.get("product_id") or row.get("productId") or row.get("id") or "").strip()
+    current_name = row.get("product_name") or row.get("productName") or ""
+    # If name is blank or equal to the product id, replace with master product name.
+    if pid and (not current_name or str(current_name).strip() == pid):
+        row["product_name"] = product_name_for(pid, current_name)
+    elif current_name and not row.get("product_name"):
+        row["product_name"] = current_name
+    if pid and not row.get("unit"):
+        row["unit"] = product_unit_for(pid, row.get("uom", ""))
+    return row
+
+def enrich_order_items(order):
+    order = dict(order)
+    items = []
+    for item in order.get("items", []) or []:
+        if isinstance(item, dict):
+            items.append(enrich_product_display(item))
+    order["items"] = items
+    return order
+
 def add_stock_movement(product_id, product_name, qty, movement_type, ref_no="", remarks="", unit=""):
     qty = float(qty or 0)
     if movement_type in ["OUT", "DISPATCH", "SALE"] and qty > 0:
         qty = -qty
+    product_name = product_name_for(product_id, product_name)
+    unit = product_unit_for(product_id, unit)
     record = {
         "id": make_id("mov"),
         "movementId": make_id("mov"),
@@ -340,11 +387,16 @@ def add_stock_movement(product_id, product_name, qty, movement_type, ref_no="", 
 def stock_balance_by_product():
     balances = {}
     for m in list_records("stock_movements"):
+        m = enrich_product_display(m)
         pid = str(m.get("product_id") or m.get("product") or m.get("product_name") or "").strip()
-        name = m.get("product_name") or pid
+        name = m.get("product_name") or product_name_for(pid, pid)
+        unit = m.get("unit") or product_unit_for(pid, "")
         if not pid:
             continue
-        balances.setdefault(pid, {"product_id": pid, "product_name": name, "unit": m.get("unit", ""), "stock_qty": 0.0})
+        balances.setdefault(pid, {"product_id": pid, "product_name": name, "unit": unit, "stock_qty": 0.0})
+        # Refresh display values on every calculation so old imported rows also show names.
+        balances[pid]["product_name"] = product_name_for(pid, name)
+        balances[pid]["unit"] = product_unit_for(pid, unit)
         try:
             balances[pid]["stock_qty"] += float(m.get("qty", 0) or 0)
         except Exception:
@@ -361,9 +413,9 @@ def normalize_legacy_inventory():
         pid = str(inv.get("product_id") or inv.get("productId") or inv.get("item") or inv.get("product") or inv.get("name") or "").strip()
         if not pid:
             continue
-        name = inv.get("product_name") or inv.get("item") or inv.get("product") or inv.get("name") or pid
+        name = product_name_for(pid, inv.get("product_name") or inv.get("item") or inv.get("product") or inv.get("name") or pid)
         qty = inv.get("qty") or inv.get("quantity") or inv.get("stock") or inv.get("opening_stock") or 0
-        unit = inv.get("unit") or inv.get("uom") or ""
+        unit = product_unit_for(pid, inv.get("unit") or inv.get("uom") or "")
         add_stock_movement(pid, name, qty, "OPENING", "LEGACY_IMPORT", "Converted from imported inventory", unit)
         count += 1
     return count
