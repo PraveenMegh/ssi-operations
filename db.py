@@ -149,22 +149,146 @@ def get_record(module, record_id):
         return None
     return _json_loads(row[0] if using_postgres() else row["payload"])
 
+
+# ---------- Flexible legacy/Firebase/localStorage import helpers ----------
+def _maybe_json(value):
+    if isinstance(value, str):
+        txt = value.strip()
+        if (txt.startswith('{') and txt.endswith('}')) or (txt.startswith('[') and txt.endswith(']')):
+            try:
+                return json.loads(txt)
+            except Exception:
+                return value
+    return value
+
+def _unwrap_state(raw):
+    """Accepts Firebase document, app backup, or localStorage dump and returns the most likely app state."""
+    raw = _maybe_json(raw)
+    if not isinstance(raw, dict):
+        return {}
+
+    # Browser console localStorage export often looks like {"ssiData": "{...}", ...}
+    for key in ["ssiData", "SSI_DATA", "ssi_inventory_data", "appState", "state", "payload", "data"]:
+        if key in raw:
+            val = _maybe_json(raw.get(key))
+            if isinstance(val, dict):
+                return _unwrap_state(val) if val is not raw else val
+
+    # Firestore REST export may put fields under fields.xxx.arrayValue/mapValue. Basic unwrap.
+    if "fields" in raw and isinstance(raw["fields"], dict):
+        return _firestore_fields_to_plain(raw["fields"])
+
+    return raw
+
+def _firestore_value_to_plain(v):
+    if not isinstance(v, dict):
+        return v
+    if "stringValue" in v: return _maybe_json(v["stringValue"])
+    if "integerValue" in v:
+        try: return int(v["integerValue"])
+        except Exception: return v["integerValue"]
+    if "doubleValue" in v:
+        try: return float(v["doubleValue"])
+        except Exception: return v["doubleValue"]
+    if "booleanValue" in v: return bool(v["booleanValue"])
+    if "timestampValue" in v: return v["timestampValue"]
+    if "arrayValue" in v:
+        values = v.get("arrayValue", {}).get("values", [])
+        return [_firestore_value_to_plain(x) for x in values]
+    if "mapValue" in v:
+        return _firestore_fields_to_plain(v.get("mapValue", {}).get("fields", {}))
+    return v
+
+def _firestore_fields_to_plain(fields):
+    return {k: _firestore_value_to_plain(v) for k, v in fields.items()}
+
+MODULE_ALIASES = {
+    "products": ["products", "product", "items", "itemMaster", "productMaster"],
+    "clients": ["clients", "customers", "vendors", "parties", "clientMaster", "customerMaster", "vendorMaster"],
+    "inventory": ["inventory", "stock", "stocks", "stockItems", "inventoryItems"],
+    "orders": ["orders", "salesOrders", "sales_orders", "saleOrders", "orderList"],
+    "dispatches": ["dispatches", "dispatch", "dispatchOrders", "dispatchList"],
+    "units": ["units", "uom", "unitMaster"],
+    "accounts": ["accounts"],
+    "users": ["users"],
+    "stock_movements": ["stock_movements", "stockMovements", "stockLedger", "movements"],
+    "employees": ["employees"],
+    "attendance": ["attendance"],
+    "payroll": ["payroll", "salary"],
+}
+
+def _rows_from_any(value):
+    value = _maybe_json(value)
+    if isinstance(value, list):
+        return [x for x in value if isinstance(x, dict)]
+    if isinstance(value, dict):
+        # if dict of records, use values; if a single record, return one record
+        vals = list(value.values())
+        if vals and all(isinstance(x, dict) for x in vals):
+            return vals
+        if any(k in value for k in ["id", "name", "orderId", "productId", "clientId", "dispatchId"]):
+            return [value]
+    return []
+
+def _find_rows(state, module):
+    if not isinstance(state, dict):
+        return []
+    for key in MODULE_ALIASES.get(module, [module]):
+        if key in state:
+            rows = _rows_from_any(state.get(key))
+            if rows:
+                return rows
+    # One more level down for exports like {collections:{products:[...]}}
+    for parent in ["collections", "modules", "tables", "payload", "data", "state"]:
+        child = state.get(parent)
+        child = _maybe_json(child)
+        if isinstance(child, dict):
+            rows = _find_rows(child, module)
+            if rows:
+                return rows
+    return []
+
+def normalize_record(module, row):
+    row = dict(row)
+    # Product aliases
+    if module == "products":
+        row["id"] = row.get("id") or row.get("productId") or row.get("code") or row.get("productCode") or row.get("name") or row.get("productName")
+        row["name"] = row.get("name") or row.get("product_name") or row.get("productName") or row.get("item") or row.get("id")
+        row["unit"] = row.get("unit") or row.get("uom") or row.get("unitName") or ""
+    elif module == "clients":
+        row["id"] = row.get("id") or row.get("clientId") or row.get("customerId") or row.get("vendorId") or row.get("name") or row.get("clientName")
+        row["name"] = row.get("name") or row.get("client_name") or row.get("clientName") or row.get("customerName") or row.get("vendorName") or row.get("id")
+    elif module == "orders":
+        row["id"] = row.get("id") or row.get("orderId") or row.get("orderNo") or row.get("salesOrderNo")
+        row["orderId"] = row.get("orderId") or row.get("id")
+        row["client_name"] = row.get("client_name") or row.get("clientName") or row.get("customerName") or row.get("buyerName")
+        row["items"] = row.get("items") or row.get("products") or row.get("lines") or []
+    elif module == "dispatches":
+        row["id"] = row.get("id") or row.get("dispatchId") or row.get("dispatchNo")
+        row["dispatchId"] = row.get("dispatchId") or row.get("id")
+        row["items"] = row.get("items") or row.get("products") or row.get("lines") or []
+    elif module == "inventory":
+        row["id"] = row.get("id") or row.get("product_id") or row.get("productId") or row.get("product") or row.get("item") or row.get("name")
+    return row
+
 def import_state(full_state, include_payroll=False):
     init_db()
+    original_state = full_state
+    full_state = _unwrap_state(full_state)
     name = "full_import_backup_" + datetime.now().strftime("%Y%m%d_%H%M%S")
-    save_backup(name, full_state)
+    save_backup(name, original_state)
     modules = MODULES + (PAYROLL_MODULES if include_payroll else [])
     counts = {}
     for module in modules:
-        rows = full_state.get(module, [])
-        if isinstance(rows, dict):
-            rows = list(rows.values())
-        if not isinstance(rows, list):
-            rows = []
+        rows = _find_rows(full_state, module)
+        saved = 0
         for row in rows:
             if isinstance(row, dict):
-                upsert_record(module, row)
-        counts[module] = len(rows)
+                rec = normalize_record(module, row)
+                if get_record_id(module, rec):
+                    upsert_record(module, rec)
+                    saved += 1
+        counts[module] = saved
     return counts
 
 def export_state(include_backups=False):

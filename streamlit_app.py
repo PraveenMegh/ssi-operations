@@ -64,7 +64,7 @@ def client_options():
 
 if page == "Migration / Backup":
     st.subheader("Import existing Render/Firebase data safely")
-    st.write("Upload full JSON backup. Payroll/attendance/employees are preserved inside backup but not imported unless checkbox is selected.")
+    st.write("Upload old app JSON/localStorage/Firebase backup. Importer now detects nested ssiData, payload/data/state, and common module names automatically. Payroll/attendance/employees are skipped unless checkbox is selected.")
     uploaded = st.file_uploader("Upload Firebase/localStorage JSON backup", type=["json"])
     include_payroll = st.checkbox("Also import payroll/attendance/employees here", value=False, help="Keep unchecked as per current plan.")
     if uploaded and st.button("Import safely"):
@@ -76,6 +76,8 @@ if page == "Migration / Backup":
             converted = normalize_legacy_inventory()
             st.success("Import completed. Original backup was stored before import.")
             st.json(counts)
+            if sum(counts.values()) == 0:
+                st.warning("Import read the file, but no operations records were detected. Please upload the original SSI backup JSON, not the JS code ZIP. If needed, share the backup JSON and I will map its structure.")
             if converted:
                 st.info(f"Converted {converted} old inventory rows into stock ledger movements.")
             skipped = {m: len(full_state.get(m, [])) for m in PAYROLL_MODULES if isinstance(full_state.get(m, []), list)}
