@@ -1,44 +1,52 @@
-# SSI Operations Streamlit App — Data-Safe Split
+# SSI Operations Streamlit App v2 — Data-Safe Operations Module
 
-This app is for moving ONLY these modules to Streamlit:
-- Inventory
-- Sales / Orders
-- Dispatch
+This app is for **operations only**:
 - Products
 - Clients / Vendors
+- Inventory
+- Sales Orders
+- Dispatch
 - Reports
-- Users / Units / Accounts data if present
+- Backup / Import / Export
 
-These modules stay on the existing Render app:
+These stay in the existing Render payroll app:
 - Payroll
 - Attendance
 - Employees
 
-## Data safety rule
-The importer stores a full backup first, then imports only non-payroll modules. It does not delete Firebase/Render data.
+## Important data safety points
 
-## Live database recommendation
-For Streamlit Cloud, use Supabase/PostgreSQL by adding this secret/environment variable:
+1. Import stores a full backup first.
+2. Payroll / Attendance / Employees are skipped by default.
+3. Old inventory rows are not deleted.
+4. Old inventory can be converted into stock ledger movements.
+5. Dispatch deducts stock through stock movement records.
+6. Current stock is calculated from the stock ledger, not overwritten manually.
+
+## Recommended live database
+
+For Streamlit Cloud, use Supabase/PostgreSQL and set:
 
 ```bash
 DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/postgres
 ```
 
-If DATABASE_URL is missing, the app uses SQLite for local testing only. Streamlit Cloud local SQLite can reset after redeploy, so it is not recommended for live business data.
-
-## Migration steps
-1. Open your current Render app.
-2. Download/export full JSON backup from Backup/Firebase module or browser localStorage.
-3. Deploy this Streamlit app.
-4. Open Migration / Backup page.
-5. Upload JSON backup.
-6. Keep `Also import payroll/attendance/employees here` unchecked.
-7. Verify counts and records.
-8. Download a Streamlit JSON backup after import.
-9. Only after verification, use Streamlit for Inventory/Sales/Dispatch.
+SQLite is okay only for local testing.
 
 ## Run locally
+
 ```bash
 pip install -r requirements.txt
 streamlit run streamlit_app.py
 ```
+
+## Migration flow
+
+1. Export JSON backup from old Render/Firebase app.
+2. Deploy this app.
+3. Open **Migration / Backup**.
+4. Upload JSON.
+5. Keep payroll checkbox unchecked.
+6. Verify Products, Clients, Inventory, Orders.
+7. Export a new JSON backup from Streamlit.
+8. Then start using operations in Streamlit.
